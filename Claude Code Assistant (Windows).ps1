@@ -16,7 +16,7 @@
 # ============================================================
 # Script Version & Update Configuration
 # ============================================================
-$script:ScriptVersion = "1.0.0"
+$script:ScriptVersion = "7.0.0"
 $script:GitHubRawUrl = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude%20Code%20Assistant%20(Windows).ps1"
 $script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
 
@@ -1392,3 +1392,4 @@ $window.Add_ContentRendered({
 # Show Window
 # ============================================================
 $window.ShowDialog() | Out-Null
+
