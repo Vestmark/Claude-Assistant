@@ -8,7 +8,7 @@ Installs and configures Claude Code with AWS Bedrock support.
 - Configures environment variables via ~/.claude-code-env
 - Provides model selection dropdowns for Bedrock
 
-Version: 7.0.0
+Version: 7.1.0
 GitHub: https://github.com/Vestmark/Claude-Assistant
 """
 
@@ -1196,15 +1196,19 @@ class ClaudeCodeAssistant:
 
     # ================================================================ EVENTS: START CLAUDE
     def _on_start_claude(self):
+        self._write_install_log("=== Start Claude button clicked ===", "INFO")
         self.set_status("Launching Claude Code terminal...")
 
         stored = read_env_file()
         project_path = stored.get("CLAUDE_CODE_DEFAULT_PROJECT", "").strip()
+        self._write_install_log(f"Project path: {project_path if project_path else '(none)'}", "INFO")
 
         terminal = find_terminal_emulator()
+        self._write_install_log(f"Terminal found: {terminal}", "INFO")
         if not terminal:
             messagebox.showerror("Error", "No terminal emulator found.")
             self.set_status("Failed to launch Claude: no terminal found.")
+            self._write_install_log("ERROR: No terminal emulator found", "ERROR")
             return
 
         claude_script_parts = [
@@ -1221,14 +1225,20 @@ class ClaudeCodeAssistant:
         claude_script_parts.append('claude')
 
         claude_script = '; '.join(claude_script_parts)
+        self._write_install_log(f"Claude script: {claude_script}", "INFO")
 
         try:
+            self._write_install_log(f"Attempting to launch terminal: {terminal}", "INFO")
             if "gnome-terminal" in terminal:
+                self._write_install_log("Using gnome-terminal format", "INFO")
                 subprocess.Popen([terminal, "--", "bash", "-c", claude_script])
             else:
+                self._write_install_log("Using standard terminal format", "INFO")
                 subprocess.Popen([terminal, "-e", "bash", "-c", claude_script])
             self.set_status("Claude Code terminal launched.")
+            self._write_install_log("Terminal launched successfully!", "OK")
         except Exception as e:
+            self._write_install_log(f"Exception launching terminal: {e}", "ERROR")
             messagebox.showerror("Error", f"Failed to launch terminal: {e}")
             self.set_status("Failed to launch Claude.")
 
