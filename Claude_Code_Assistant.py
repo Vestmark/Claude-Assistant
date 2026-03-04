@@ -27,8 +27,8 @@ from tkinter import filedialog, messagebox, ttk
 # ============================================================
 # Script Version & Update Configuration
 # ============================================================
-SCRIPT_VERSION = "7.0.0"
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude_Code_Assistant_Linux.py"
+SCRIPT_VERSION = "7.1.0"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude_Code_Assistant.py"
 SCRIPT_PATH = os.path.abspath(__file__)
 
 ENV_FILE = Path.home() / ".claude-code-env"
@@ -1211,6 +1211,9 @@ class ClaudeCodeAssistant:
             self._write_install_log("ERROR: No terminal emulator found", "ERROR")
             return
 
+        # Source environment and run claude
+        env_source = f'[ -f "{ENV_FILE}" ] && source "{ENV_FILE}"; '
+
         claude_script_parts = [
             'echo "Claude Code"',
             'echo "==========="',
@@ -1224,17 +1227,23 @@ class ClaudeCodeAssistant:
 
         claude_script_parts.append('claude')
 
-        claude_script = '; '.join(claude_script_parts)
+        # Add a final read to keep terminal open if claude fails
+        claude_script_parts.append('echo ""')
+        claude_script_parts.append('read -p "Press Enter to close..."')
+
+        claude_script = env_source + '; '.join(claude_script_parts)
         self._write_install_log(f"Claude script: {claude_script}", "INFO")
 
         try:
             self._write_install_log(f"Attempting to launch terminal: {terminal}", "INFO")
             if "gnome-terminal" in terminal:
                 self._write_install_log("Using gnome-terminal format", "INFO")
-                subprocess.Popen([terminal, "--", "bash", "-c", claude_script])
+                proc = subprocess.Popen([terminal, "--", "bash", "-l", "-c", claude_script])
+                self._write_install_log(f"Process created with PID: {proc.pid}", "INFO")
             else:
                 self._write_install_log("Using standard terminal format", "INFO")
-                subprocess.Popen([terminal, "-e", "bash", "-c", claude_script])
+                proc = subprocess.Popen([terminal, "-e", "bash", "-l", "-c", claude_script])
+                self._write_install_log(f"Process created with PID: {proc.pid}", "INFO")
             self.set_status("Claude Code terminal launched.")
             self._write_install_log("Terminal launched successfully!", "OK")
         except Exception as e:
