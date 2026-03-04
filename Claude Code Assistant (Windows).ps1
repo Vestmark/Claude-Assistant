@@ -8,7 +8,17 @@
     - Installs Claude Code via official installer (claude.ai)
     - Configures environment variables at User scope
     - Provides model selection dropdowns for Bedrock
+.NOTES
+    Version: 1.0.0
+    GitHub: https://github.com/Vestmark/Claude-Assistant
 #>
+
+# ============================================================
+# Script Version & Update Configuration
+# ============================================================
+$script:ScriptVersion = "1.0.0"
+$script:GitHubRawUrl = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude%20Code%20Assistant%20(Windows).ps1"
+$script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
 
 # Single combined C# compilation for all P/Invoke (console minimize + env broadcast)
 Add-Type -TypeDefinition @'
@@ -153,10 +163,25 @@ Add-Type -AssemblyName WindowsBase
     <DockPanel Margin="20">
         <!-- Header -->
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
-            <TextBlock Text="Claude Code Assistant"
-                       FontSize="22" FontWeight="Bold" Foreground="#1e293b"/>
-            <TextBlock Text="Designed by Vestmark IT"
-                       Foreground="#6b7280" Margin="0,4,0,0"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="Claude Code Assistant"
+                               FontSize="22" FontWeight="Bold" Foreground="#1e293b"/>
+                    <TextBlock Text="Designed by Vestmark IT"
+                               Foreground="#6b7280" Margin="0,4,0,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Name="LblVersion" Text="v1.0.0"
+                               FontSize="11" Foreground="#9ca3af" HorizontalAlignment="Right"/>
+                    <Button Name="BtnCheckUpdate" Content="Check for Updates"
+                            Style="{StaticResource SecondaryBtn}"
+                            Padding="12,6" FontSize="11" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Grid>
         </StackPanel>
 
         <!-- Persistent Action Buttons (visible on all tabs) -->
@@ -528,6 +553,8 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 
 $window.MaxHeight = [System.Windows.SystemParameters]::WorkArea.Height
 
+$LblVersion      = $window.FindName("LblVersion")
+$BtnCheckUpdate  = $window.FindName("BtnCheckUpdate")
 $LblStatusBar    = $window.FindName("LblStatusBar")
 $DotGit          = $window.FindName("DotGit")
 $DotAws          = $window.FindName("DotAws")
@@ -711,6 +738,135 @@ function Send-EnvironmentBroadcast {
         [void][NativeHelper]::SendMessageTimeout(
             [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result)
     } catch {}
+}
+
+function Get-LatestScriptVersion {
+    try {
+        $latestContent = Invoke-WebRequest -Uri $script:GitHubRawUrl -UseBasicParsing -TimeoutSec 10
+        if ($latestContent.Content -match '\$script:ScriptVersion\s*=\s*"([^"]+)"') {
+            return $matches[1]
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
+function Compare-Version {
+    param([string]$Version1, [string]$Version2)
+    $v1Parts = $Version1.Split('.')
+    $v2Parts = $Version2.Split('.')
+    $maxLength = [Math]::Max($v1Parts.Length, $v2Parts.Length)
+
+    for ($i = 0; $i -lt $maxLength; $i++) {
+        $v1Part = if ($i -lt $v1Parts.Length) { [int]$v1Parts[$i] } else { 0 }
+        $v2Part = if ($i -lt $v2Parts.Length) { [int]$v2Parts[$i] } else { 0 }
+
+        if ($v1Part -lt $v2Part) { return -1 }
+        if ($v1Part -gt $v2Part) { return 1 }
+    }
+    return 0
+}
+
+function Update-Script {
+    param([string]$NewVersion)
+
+    try {
+        Write-AppLog "Downloading version $NewVersion from GitHub..."
+        $latestContent = Invoke-WebRequest -Uri $script:GitHubRawUrl -UseBasicParsing -TimeoutSec 30
+
+        $backupPath = $script:ScriptPath + ".backup"
+        Write-AppLog "Creating backup at: $backupPath"
+        Copy-Item -Path $script:ScriptPath -Destination $backupPath -Force
+
+        Write-AppLog "Installing new version..."
+        [System.IO.File]::WriteAllText($script:ScriptPath, $latestContent.Content, [System.Text.Encoding]::UTF8)
+
+        Write-AppLog "Update complete! Restart the application to use version $NewVersion." "OK"
+        $LblStatusBar.Text = "Update complete - restart required"
+
+        $result = [System.Windows.MessageBox]::Show(
+            "Script updated successfully to version $NewVersion.`n`nRestart the application now?",
+            "Update Complete",
+            [System.Windows.MessageBoxButton]::YesNo,
+            [System.Windows.MessageBoxImage]::Information)
+
+        if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
+            Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($script:ScriptPath)`"")
+            $window.Close()
+        }
+
+        return $true
+    } catch {
+        Write-AppLog "Update failed: $($_.Exception.Message)" "ERROR"
+        $LblStatusBar.Text = "Update failed"
+        [System.Windows.MessageBox]::Show(
+            "Failed to update script:`n$($_.Exception.Message)`n`nBackup preserved at: $backupPath",
+            "Update Error",
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Error)
+        return $false
+    }
+}
+
+function Check-ScriptUpdate {
+    param([bool]$Silent = $false)
+
+    $LblStatusBar.Text = "Checking for updates..."
+    Write-AppLog "Checking for updates... (Current: v$($script:ScriptVersion))"
+
+    $latestVersion = Get-LatestScriptVersion
+
+    if ($null -eq $latestVersion) {
+        Write-AppLog "Unable to check for updates. Check your internet connection." "WARN"
+        $LblStatusBar.Text = "Update check failed"
+        if (-not $Silent) {
+            [System.Windows.MessageBox]::Show(
+                "Unable to check for updates. Please verify your internet connection.",
+                "Update Check Failed",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Warning)
+        }
+        return
+    }
+
+    Write-AppLog "Latest version on GitHub: v$latestVersion"
+    $comparison = Compare-Version $script:ScriptVersion $latestVersion
+
+    if ($comparison -lt 0) {
+        Write-AppLog "Update available: v$latestVersion" "OK"
+        $LblStatusBar.Text = "Update available: v$latestVersion"
+
+        $result = [System.Windows.MessageBox]::Show(
+            "A new version is available!`n`nCurrent version: $($script:ScriptVersion)`nLatest version: $latestVersion`n`nWould you like to update now?",
+            "Update Available",
+            [System.Windows.MessageBoxButton]::YesNo,
+            [System.Windows.MessageBoxImage]::Information)
+
+        if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
+            Update-Script -NewVersion $latestVersion
+        }
+    } elseif ($comparison -eq 0) {
+        Write-AppLog "You are running the latest version." "OK"
+        $LblStatusBar.Text = "Up to date (v$($script:ScriptVersion))"
+        if (-not $Silent) {
+            [System.Windows.MessageBox]::Show(
+                "You are running the latest version ($($script:ScriptVersion)).",
+                "Up to Date",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Information)
+        }
+    } else {
+        Write-AppLog "Your version is newer than GitHub (dev version?)." "INFO"
+        $LblStatusBar.Text = "Development version detected"
+        if (-not $Silent) {
+            [System.Windows.MessageBox]::Show(
+                "Your version ($($script:ScriptVersion)) is newer than the latest on GitHub ($latestVersion).`n`nYou may be running a development version.",
+                "Newer Version Detected",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Information)
+        }
+    }
 }
 
 function Show-CurrentConfig {
@@ -1192,13 +1348,44 @@ $BtnStartClaude.Add_Click({
     $LblStatusBar.Text = "Claude Code terminal launched."
 })
 
+# --- Check for Updates ---
+$BtnCheckUpdate.Add_Click({
+    Check-ScriptUpdate -Silent $false
+})
+
 # ============================================================
 # Initialization - deferred until the window is visible
 # ============================================================
 $window.Add_ContentRendered({
+    $LblVersion.Text = "v$($script:ScriptVersion)"
     Update-Prerequisites
     Import-ConfigIntoForm
-    Write-AppLog "Claude Code Assistant ready."
+    Write-AppLog "Claude Code Assistant v$($script:ScriptVersion) ready."
+
+    # Silent check for updates on startup (non-blocking)
+    Start-Job -ScriptBlock {
+        param($Version, $Url)
+        try {
+            $content = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 10
+            if ($content.Content -match '\$script:ScriptVersion\s*=\s*"([^"]+)"') {
+                $latestVersion = $matches[1]
+                $v1Parts = $Version.Split('.')
+                $v2Parts = $latestVersion.Split('.')
+                $maxLength = [Math]::Max($v1Parts.Length, $v2Parts.Length)
+
+                for ($i = 0; $i -lt $maxLength; $i++) {
+                    $v1Part = if ($i -lt $v1Parts.Length) { [int]$v1Parts[$i] } else { 0 }
+                    $v2Part = if ($i -lt $v2Parts.Length) { [int]$v2Parts[$i] } else { 0 }
+
+                    if ($v1Part -lt $v2Part) {
+                        return @{UpdateAvailable=$true; LatestVersion=$latestVersion}
+                    }
+                    if ($v1Part -gt $v2Part) { break }
+                }
+            }
+        } catch {}
+        return @{UpdateAvailable=$false}
+    } -ArgumentList $script:ScriptVersion, $script:GitHubRawUrl | Out-Null
 })
 
 # ============================================================
