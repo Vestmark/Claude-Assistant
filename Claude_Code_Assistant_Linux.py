@@ -7,17 +7,29 @@ Installs and configures Claude Code with AWS Bedrock support.
 - Installs Claude Code via official installer (claude.ai)
 - Configures environment variables via ~/.claude-code-env
 - Provides model selection dropdowns for Bedrock
+
+Version: 7.0.0
+GitHub: https://github.com/Vestmark/Claude-Assistant
 """
 
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import tkinter as tk
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+
+# ============================================================
+# Script Version & Update Configuration
+# ============================================================
+SCRIPT_VERSION = "7.0.0"
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude_Code_Assistant_Linux.py"
+SCRIPT_PATH = os.path.abspath(__file__)
 
 ENV_FILE = Path.home() / ".claude-code-env"
 BASHRC = Path.home() / ".bashrc"
@@ -164,6 +176,61 @@ def get_env_var(name):
     return os.environ.get(name)
 
 
+def get_latest_script_version():
+    """Download the script from GitHub and extract version number."""
+    try:
+        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=10) as response:
+            content = response.read().decode('utf-8')
+            match = re.search(r'SCRIPT_VERSION\s*=\s*"([^"]+)"', content)
+            if match:
+                return match.group(1)
+            return "NO_VERSION_FOUND"
+    except Exception:
+        return None
+
+
+def compare_versions(v1, v2):
+    """Compare two semantic version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
+    v1_parts = [int(x) for x in v1.split('.')]
+    v2_parts = [int(x) for x in v2.split('.')]
+    max_len = max(len(v1_parts), len(v2_parts))
+
+    v1_parts.extend([0] * (max_len - len(v1_parts)))
+    v2_parts.extend([0] * (max_len - len(v2_parts)))
+
+    for p1, p2 in zip(v1_parts, v2_parts):
+        if p1 < p2:
+            return -1
+        if p1 > p2:
+            return 1
+    return 0
+
+
+def update_script(new_version, log_callback=None):
+    """Download and install the new version of the script."""
+    try:
+        if log_callback:
+            log_callback(f"Downloading version {new_version} from GitHub...", "INFO")
+
+        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=30) as response:
+            new_content = response.read().decode('utf-8')
+
+        if log_callback:
+            log_callback("Installing new version...", "INFO")
+
+        with open(SCRIPT_PATH, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        if log_callback:
+            log_callback(f"Update complete! Restart the application to use version {new_version}.", "OK")
+
+        return True
+    except Exception as e:
+        if log_callback:
+            log_callback(f"Update failed: {e}", "ERROR")
+        return False
+
+
 class HoverButton(tk.Button):
     """Button with hover color change."""
 
@@ -239,12 +306,30 @@ class ClaudeCodeAssistant:
 
     # ------------------------------------------------------------------ header
     def _build_header(self):
-        frame = ttk.Frame(self.root)
+        frame = tk.Frame(self.root, bg=BG)
         frame.pack(fill="x", padx=20, pady=(16, 0))
-        ttk.Label(frame, text="Claude Code Assistant",
+
+        # Left side - title and subtitle
+        left_frame = tk.Frame(frame, bg=BG)
+        left_frame.pack(side="left", fill="both", expand=True)
+        ttk.Label(left_frame, text="Claude Code Assistant",
                   style="Header.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="Designed by Vestmark IT",
+        ttk.Label(left_frame, text="Designed by Vestmark IT",
                   style="SubHeader.TLabel").pack(anchor="w", pady=(2, 0))
+
+        # Right side - version info and update button
+        right_frame = tk.Frame(frame, bg=BG)
+        right_frame.pack(side="right")
+        self.version_label = tk.Label(right_frame, text=f"v{SCRIPT_VERSION}",
+                                      bg=BG, fg=TEXT_FAINT,
+                                      font=("sans-serif", 9))
+        self.version_label.pack(anchor="e")
+        self.btn_check_update = HoverButton(
+            right_frame, SECONDARY_BTN_BG, SECONDARY_BTN_HOVER,
+            fg=TEXT_SECONDARY, text="Check for Updates",
+            command=self._on_check_update)
+        self.btn_check_update.config(font=("sans-serif", 9, "bold"), padx=10, pady=4)
+        self.btn_check_update.pack(anchor="e", pady=(4, 0))
 
     # ------------------------------------------------------------------ notebook
     def _build_notebook(self):
@@ -253,8 +338,8 @@ class ClaudeCodeAssistant:
 
     # ------------------------------------------------------------------ persistent buttons
     def _build_persistent_buttons(self):
-        btn_frame = tk.Frame(self.root, bg=BG, padx=20, pady=(8, 0))
-        btn_frame.pack(fill="x")
+        btn_frame = tk.Frame(self.root, bg=BG, padx=20)
+        btn_frame.pack(fill="x", pady=(8, 0))
 
         right_frame = tk.Frame(btn_frame, bg=BG)
         right_frame.pack(side="right")
@@ -1146,6 +1231,95 @@ class ClaudeCodeAssistant:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch terminal: {e}")
             self.set_status("Failed to launch Claude.")
+
+    # ================================================================ EVENTS: CHECK FOR UPDATES
+    def _on_check_update(self):
+        self.set_status("Checking for updates...")
+        self._write_install_log(f"Checking for updates... (Current: v{SCRIPT_VERSION})")
+
+        def _check():
+            latest_version = get_latest_script_version()
+
+            def _show_result():
+                if latest_version is None:
+                    self._write_install_log("Unable to check for updates. Check your internet connection.", "WARN")
+                    self.set_status("Update check failed - connection error")
+                    messagebox.showwarning(
+                        "Update Check Failed",
+                        "Unable to check for updates. Please verify your internet connection.\n\n"
+                        "Check the Output Log for details.")
+                    return
+
+                if latest_version == "NO_VERSION_FOUND":
+                    self._write_install_log("GitHub file doesn't contain version info yet.", "WARN")
+                    self.set_status("GitHub file needs update")
+                    messagebox.showinfo(
+                        "GitHub File Not Updated",
+                        "The file on GitHub doesn't contain version control information yet.\n\n"
+                        "Please upload the updated local file to GitHub to enable auto-updates.")
+                    return
+
+                self._write_install_log(f"Latest version on GitHub: v{latest_version}")
+                comparison = compare_versions(SCRIPT_VERSION, latest_version)
+
+                if comparison < 0:
+                    self._write_install_log(f"Update available: v{latest_version}", "OK")
+                    self.set_status(f"Update available: v{latest_version}")
+
+                    result = messagebox.askyesno(
+                        "Update Available",
+                        f"A new version is available!\n\n"
+                        f"Current version: {SCRIPT_VERSION}\n"
+                        f"Latest version: {latest_version}\n\n"
+                        f"Would you like to update now?")
+
+                    if result:
+                        self._do_update(latest_version)
+                elif comparison == 0:
+                    self._write_install_log("You are running the latest version.", "OK")
+                    self.set_status(f"Up to date (v{SCRIPT_VERSION})")
+                    messagebox.showinfo(
+                        "Up to Date",
+                        f"You are running the latest version ({SCRIPT_VERSION}).")
+                else:
+                    self._write_install_log("Your version is newer than GitHub (dev version?).", "INFO")
+                    self.set_status("Development version detected")
+                    messagebox.showinfo(
+                        "Newer Version Detected",
+                        f"Your version ({SCRIPT_VERSION}) is newer than the latest on GitHub ({latest_version}).\n\n"
+                        f"You may be running a development version.")
+
+            self.root.after(0, _show_result)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _do_update(self, new_version):
+        self.set_status(f"Updating to v{new_version}...")
+
+        def _update():
+            success = update_script(new_version, self._write_install_log)
+
+            def _finish():
+                if success:
+                    self.set_status("Update complete - restart required")
+                    result = messagebox.askyesno(
+                        "Update Complete",
+                        f"Script updated successfully to version {new_version}.\n\n"
+                        f"Restart the application now?")
+
+                    if result:
+                        # Restart the application
+                        python = sys.executable
+                        os.execl(python, python, *sys.argv)
+                else:
+                    self.set_status("Update failed")
+                    messagebox.showerror(
+                        "Update Error",
+                        "Failed to update script.\n\nCheck the Output Log for details.")
+
+            self.root.after(0, _finish)
+
+        threading.Thread(target=_update, daemon=True).start()
 
 
 def main():
