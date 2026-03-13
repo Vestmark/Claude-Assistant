@@ -16,7 +16,7 @@
 # ============================================================
 # Script Version & Update Configuration
 # ============================================================
-$script:ScriptVersion = "7.0.0"
+$script:ScriptVersion = "7.1.0"
 $script:GitHubRawUrl = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude%20Code%20Assistant%20(Windows).ps1"
 $script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
 
@@ -320,6 +320,8 @@ Add-Type -AssemblyName WindowsBase
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="16"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="12"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <!-- Row 0: AWS Region -->
@@ -394,6 +396,12 @@ Add-Type -AssemblyName WindowsBase
                                     <CheckBox Name="ChkBedrock" Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="3"
                                               IsChecked="True" FontSize="13" Foreground="#374151"
                                               Content="  Use AWS Bedrock  (CLAUDE_CODE_USE_BEDROCK = 1)"
+                                              FontWeight="Medium"/>
+
+                                    <!-- Row 12: Add .bin to User PATH -->
+                                    <CheckBox Name="ChkAddBinToPath" Grid.Row="12" Grid.Column="0" Grid.ColumnSpan="3"
+                                              IsChecked="True" FontSize="13" Foreground="#374151"
+                                              Content="  Add %USERPROFILE%\.bin to User PATH"
                                               FontWeight="Medium"/>
                                 </Grid>
                             </StackPanel>
@@ -573,6 +581,7 @@ $CmbSmallModel   = $window.FindName("CmbSmallModel")
 $TxtProjectPath  = $window.FindName("TxtProjectPath")
 $BtnBrowseProject= $window.FindName("BtnBrowseProject")
 $ChkBedrock      = $window.FindName("ChkBedrock")
+$ChkAddBinToPath = $window.FindName("ChkAddBinToPath")
 $BtnApplyConfig  = $window.FindName("BtnApplyConfig")
 $BtnLoadConfig   = $window.FindName("BtnLoadConfig")
 $TxtConfigOutput = $window.FindName("TxtConfigOutput")
@@ -775,10 +784,6 @@ function Update-Script {
         Write-AppLog "Downloading version $NewVersion from GitHub..."
         $latestContent = Invoke-WebRequest -Uri $script:GitHubRawUrl -UseBasicParsing -TimeoutSec 30
 
-        $backupPath = $script:ScriptPath + ".backup"
-        Write-AppLog "Creating backup at: $backupPath"
-        Copy-Item -Path $script:ScriptPath -Destination $backupPath -Force
-
         Write-AppLog "Installing new version..."
         [System.IO.File]::WriteAllText($script:ScriptPath, $latestContent.Content, [System.Text.Encoding]::UTF8)
 
@@ -801,7 +806,7 @@ function Update-Script {
         Write-AppLog "Update failed: $($_.Exception.Message)" "ERROR"
         $LblStatusBar.Text = "Update failed"
         [System.Windows.MessageBox]::Show(
-            "Failed to update script:`n$($_.Exception.Message)`n`nBackup preserved at: $backupPath",
+            "Failed to update script:`n$($_.Exception.Message)",
             "Update Error",
             [System.Windows.MessageBoxButton]::OK,
             [System.Windows.MessageBoxImage]::Error)
@@ -886,6 +891,10 @@ function Show-CurrentConfig {
         if ($null -eq $val) { $val = "(not set)" }
         [void]$sb.AppendLine("${v} = $val")
     }
+    $binPath    = Join-Path $env:USERPROFILE ".bin"
+    $userPath   = [Environment]::GetEnvironmentVariable("Path", "User")
+    $binInPath  = ($userPath -split ';' | Where-Object { $_ }) -contains $binPath
+    [void]$sb.AppendLine("USER PATH includes .bin = $(if ($binInPath) { 'Yes' } else { 'No' })  ($binPath)")
     [void]$sb.AppendLine("")
     [void]$sb.AppendLine("--- Machine Scope (read-only) ---")
     foreach ($v in $vars) {
@@ -915,6 +924,11 @@ function Import-ConfigIntoForm {
     if ($values["CLAUDE_CODE_USE_BEDROCK"]) {
         $ChkBedrock.IsChecked = ($values["CLAUDE_CODE_USE_BEDROCK"] -eq "1")
     }
+
+    $binPath = Join-Path $env:USERPROFILE ".bin"
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $ChkAddBinToPath.IsChecked = ($userPath -split ';' | Where-Object { $_ -eq $binPath }) -ne $null -and
+                                  ($userPath -split ';' | Where-Object { $_ -eq $binPath }).Count -gt 0
 
     Show-CurrentConfig
     $LblStatusBar.Text = "Loaded current environment values"
@@ -1100,6 +1114,23 @@ $BtnApplyConfig.Add_Click({
         }
 
         Add-ClaudeToUserPath | Out-Null
+
+        # Add or remove %USERPROFILE%\.bin from User PATH based on checkbox
+        $binPath    = Join-Path $env:USERPROFILE ".bin"
+        $userPath   = [Environment]::GetEnvironmentVariable("Path", "User")
+        $pathParts  = $userPath -split ';' | Where-Object { $_ }
+        $binPresent = $pathParts -contains $binPath
+        if ($ChkAddBinToPath.IsChecked -and -not $binPresent) {
+            $newPath = ($pathParts + $binPath) -join ';'
+            [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+            $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + $newPath
+            Write-AppLog "Added $binPath to User PATH." "OK"
+        } elseif (-not $ChkAddBinToPath.IsChecked -and $binPresent) {
+            $newPath = ($pathParts | Where-Object { $_ -ne $binPath }) -join ';'
+            [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+            $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + $newPath
+            Write-AppLog "Removed $binPath from User PATH." "OK"
+        }
 
         Send-EnvironmentBroadcast
         Show-CurrentConfig
@@ -1363,7 +1394,7 @@ $window.Add_ContentRendered({
     Write-AppLog "Claude Code Assistant v$($script:ScriptVersion) ready."
 
     # Silent check for updates on startup (non-blocking)
-    Start-Job -ScriptBlock {
+    $script:updateJob = Start-Job -ScriptBlock {
         param($Version, $Url)
         try {
             $content = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 10
@@ -1385,7 +1416,40 @@ $window.Add_ContentRendered({
             }
         } catch {}
         return @{UpdateAvailable=$false}
-    } -ArgumentList $script:ScriptVersion, $script:GitHubRawUrl | Out-Null
+    } -ArgumentList $script:ScriptVersion, $script:GitHubRawUrl
+
+    # Poll the job on the UI thread and notify when complete
+    $script:updatePollTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:updatePollTimer.Interval = [TimeSpan]::FromSeconds(2)
+    $script:updatePollTimer.Add_Tick({
+        if ($null -eq $script:updateJob) { $script:updatePollTimer.Stop(); return }
+        if ($script:updateJob.State -notin @('Running','NotStarted')) {
+            $script:updatePollTimer.Stop()
+            try {
+                $result = Receive-Job -Job $script:updateJob -ErrorAction SilentlyContinue
+                Remove-Job -Job $script:updateJob -Force -ErrorAction SilentlyContinue
+                $script:updateJob = $null
+                if ($result -and $result.UpdateAvailable) {
+                    $latestVersion = $result.LatestVersion
+                    Write-AppLog "Update available: v$latestVersion" "OK"
+                    $LblStatusBar.Text = "Update available: v$latestVersion"
+                    $answer = [System.Windows.MessageBox]::Show(
+                        "A new version is available!`n`nCurrent version: $($script:ScriptVersion)`nLatest version:  $latestVersion`n`nWould you like to update now?",
+                        "Update Available",
+                        [System.Windows.MessageBoxButton]::YesNo,
+                        [System.Windows.MessageBoxImage]::Information)
+                    if ($answer -eq [System.Windows.MessageBoxResult]::Yes) {
+                        Update-Script -NewVersion $latestVersion
+                    }
+                } else {
+                    Write-AppLog "No updates found. Running latest version." "OK"
+                }
+            } catch {
+                $script:updateJob = $null
+            }
+        }
+    })
+    $script:updatePollTimer.Start()
 })
 
 # ============================================================
