@@ -8,7 +8,7 @@ Installs and configures Claude Code with AWS Bedrock support.
 - Configures environment variables via ~/.claude-code-env
 - Provides model selection dropdowns for Bedrock
 
-Version: 7.1.0
+Version: 7.1.2
 GitHub: https://github.com/Vestmark/Claude-Assistant
 """
 
@@ -27,7 +27,7 @@ from tkinter import filedialog, messagebox, ttk
 # ============================================================
 # Script Version & Update Configuration
 # ============================================================
-SCRIPT_VERSION = "7.1.0"
+SCRIPT_VERSION = "7.1.2"
 GITHUB_RAW_URL = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude_Code_Assistant.py"
 SCRIPT_PATH = os.path.abspath(__file__)
 
@@ -95,6 +95,8 @@ SECONDARY_BTN_BG = "#e5e7eb"
 SECONDARY_BTN_HOVER = "#d1d5db"
 DANGER_BTN_BG = "#ef4444"
 DANGER_BTN_HOVER = "#dc2626"
+SUCCESS_BTN_BG = "#059669"
+SUCCESS_BTN_HOVER = "#047857"
 LOG_BG = "#f8fafc"
 LOG_FG = "#334155"
 STATUS_BAR_BG = "#e5e7eb"
@@ -437,6 +439,11 @@ class ClaudeCodeAssistant:
             text="Install Claude Code", command=self._on_install)
         self.btn_install.pack(side="left", padx=(0, 6))
 
+        self.btn_update_claude = HoverButton(
+            btn_frame2, SUCCESS_BTN_BG, SUCCESS_BTN_HOVER,
+            text="Update Claude Code", command=self._on_update_claude)
+        self.btn_update_claude.pack(side="left", padx=(0, 6))
+
         self.btn_uninstall = HoverButton(
             btn_frame2, DANGER_BTN_BG, DANGER_BTN_HOVER,
             text="Uninstall Claude Code", command=self._on_uninstall)
@@ -712,6 +719,8 @@ class ClaudeCodeAssistant:
         prereqs_met = self.git_installed and self.aws_installed
         self.btn_install.config(
             state="normal" if prereqs_met else "disabled")
+        self.btn_update_claude.config(
+            state="normal" if self.claude_installed else "disabled")
 
         # Enable/disable Start Claude button based on Claude Code installation
         self.btn_start_claude.config(
@@ -845,6 +854,7 @@ class ClaudeCodeAssistant:
 
     def _on_install(self):
         self.btn_install.config(state="disabled")
+        self.btn_update_claude.config(state="disabled")
         self.btn_refresh.config(state="disabled")
         self.btn_uninstall.config(state="disabled")
         self.set_status("Installing Claude Code...")
@@ -890,8 +900,64 @@ class ClaudeCodeAssistant:
     def _re_enable_install_buttons(self):
         prereqs_met = self.git_installed and self.aws_installed
         self.btn_install.config(state="normal" if prereqs_met else "disabled")
+        self.btn_update_claude.config(state="normal" if self.claude_installed else "disabled")
         self.btn_refresh.config(state="normal")
         self.btn_uninstall.config(state="normal")
+
+    def _on_update_claude(self):
+        self.btn_install.config(state="disabled")
+        self.btn_update_claude.config(state="disabled")
+        self.btn_refresh.config(state="disabled")
+        self.btn_uninstall.config(state="disabled")
+        self.set_status("Updating Claude Code...")
+        self._write_install_log("Running claude update...")
+
+        claude_ver_before = get_tool_info("claude")
+        self._write_install_log(f"Version before update: {claude_ver_before or '(unknown)'}")
+
+        def _do():
+            try:
+                env = {**os.environ,
+                       "PATH": f"{Path.home() / '.local/bin'}:{os.environ.get('PATH', '')}"}
+                proc = subprocess.Popen(
+                    ["claude", "update"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, env=env)
+                for line in iter(proc.stdout.readline, ""):
+                    stripped = line.rstrip()
+                    if stripped:
+                        self.root.after(0, self._write_install_log, stripped)
+                proc.wait(timeout=180)
+                if proc.returncode != 0:
+                    self.root.after(0, self._write_install_log,
+                                    f"claude update exited with code {proc.returncode}.", "WARN")
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                self.root.after(0, self._write_install_log,
+                                "claude update timed out after 3 minutes.", "ERROR")
+            except Exception as e:
+                self.root.after(0, self._write_install_log,
+                                f"Update error: {e}", "ERROR")
+            self.root.after(0, self._post_update_claude, claude_ver_before)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _post_update_claude(self, ver_before):
+        self._update_prerequisites()
+        claude_ver_after = get_tool_info("claude")
+        self._write_install_log(f"Version after update : {claude_ver_after or '(unknown)'}")
+        if claude_ver_after and claude_ver_after != ver_before:
+            self._write_install_log(f"Updated: {ver_before} → {claude_ver_after}", "OK")
+            self.set_status(f"Claude Code updated to {claude_ver_after}")
+        elif claude_ver_after:
+            self._write_install_log(
+                f"Version unchanged: {claude_ver_after} — already on latest, or update did not apply.", "WARN")
+            self.set_status("No version change detected — already on latest?")
+        else:
+            self._write_install_log(
+                "Claude Code not detected after update. The update may have failed.", "WARN")
+            self.set_status("Update not confirmed - click Refresh Status to re-check.")
+        self._re_enable_install_buttons()
 
     def _on_uninstall(self):
         if not messagebox.askyesno("Confirm Uninstall",
@@ -899,6 +965,7 @@ class ClaudeCodeAssistant:
             return
 
         self.btn_install.config(state="disabled")
+        self.btn_update_claude.config(state="disabled")
         self.btn_refresh.config(state="disabled")
         self.btn_uninstall.config(state="disabled")
         self.set_status("Uninstalling Claude Code...")
