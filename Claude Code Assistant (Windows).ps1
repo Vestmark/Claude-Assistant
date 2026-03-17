@@ -16,7 +16,7 @@
 # ============================================================
 # Script Version & Update Configuration
 # ============================================================
-$script:ScriptVersion = "7.1.0"
+$script:ScriptVersion = "7.1.2"
 $script:GitHubRawUrl = "https://raw.githubusercontent.com/Vestmark/Claude-Assistant/main/Claude%20Code%20Assistant%20(Windows).ps1"
 $script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
 
@@ -129,6 +129,34 @@ Add-Type -AssemblyName WindowsBase
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="#dc2626"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SuccessBtn" TargetType="Button">
+            <Setter Property="Background" Value="#059669"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="20,10"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#047857"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Background" Value="#a7f3d0"/>
+                                <Setter Property="Foreground" Value="#6ee7b7"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -267,6 +295,8 @@ Add-Type -AssemblyName WindowsBase
                                     Style="{StaticResource SecondaryBtn}" Margin="0,0,8,4"/>
                             <Button Name="BtnInstallClaude" Content="Install Claude Code"
                                     Style="{StaticResource PrimaryBtn}" Margin="0,0,8,4"/>
+                            <Button Name="BtnUpdateClaude" Content="Update Claude Code"
+                                    Style="{StaticResource SuccessBtn}" Margin="0,0,8,4"/>
                             <Button Name="BtnUninstallClaude" Content="Uninstall Claude Code"
                                     Style="{StaticResource DangerBtn}" Margin="0,0,0,4"/>
                         </WrapPanel>
@@ -572,6 +602,7 @@ $StatusAws       = $window.FindName("StatusAws")
 $StatusClaude    = $window.FindName("StatusClaude")
 $BtnCheckPrereqs = $window.FindName("BtnCheckPrereqs")
 $BtnInstallClaude= $window.FindName("BtnInstallClaude")
+$BtnUpdateClaude = $window.FindName("BtnUpdateClaude")
 $BtnUninstallClaude = $window.FindName("BtnUninstallClaude")
 $TxtLog          = $window.FindName("TxtLog")
 $CmbRegion       = $window.FindName("CmbRegion")
@@ -609,18 +640,28 @@ function Write-AppLog {
 function Get-ToolInfo {
     param([string]$Command, [string[]]$VersionArgs = @("--version"), [string[]]$FallbackPaths = @())
 
-    $cmd = Get-Command $Command -ErrorAction SilentlyContinue
-    if (-not $cmd) {
+    # Search $env:Path directly each call to avoid PowerShell's session command cache,
+    # which can return stale results after an in-place binary update (e.g. claude update).
+    $resolved = $null
+    foreach ($dir in ($env:Path -split ';' | Where-Object { $_ })) {
+        foreach ($ext in @('.exe', '.cmd', '.bat', '')) {
+            $p = Join-Path $dir "$Command$ext"
+            if (Test-Path $p -PathType Leaf -ErrorAction SilentlyContinue) { $resolved = $p; break }
+        }
+        if ($resolved) { break }
+    }
+
+    # Fall back to explicit paths if not found on PATH
+    if (-not $resolved) {
         foreach ($p in $FallbackPaths) {
-            if (Test-Path $p) {
-                $cmd = Get-Command $p -ErrorAction SilentlyContinue
-                break
-            }
+            if (Test-Path $p -PathType Leaf -ErrorAction SilentlyContinue) { $resolved = $p; break }
         }
     }
-    if (-not $cmd) { return $null }
+
+    if (-not $resolved) { return $null }
+
     try {
-        $ver = & $cmd.Source @VersionArgs 2>&1 | Select-Object -First 1
+        $ver = & $resolved @VersionArgs 2>&1 | Select-Object -First 1
         return $ver.ToString().Trim()
     } catch {
         return "(found but version unknown)"
@@ -686,12 +727,16 @@ function Update-Prerequisites {
         $BtnInstallClaude.ToolTip = $null
     }
 
-    # Enable/disable Start Claude button based on Claude Code installation
-    $BtnStartClaude.IsEnabled = $script:ClaudeInstalled
+    # Enable/disable Update/Start/Uninstall Claude buttons based on Claude Code installation
+    $BtnUpdateClaude.IsEnabled   = $script:ClaudeInstalled
+    $BtnStartClaude.IsEnabled    = $script:ClaudeInstalled
+    $BtnUninstallClaude.IsEnabled = $script:ClaudeInstalled
     if (-not $script:ClaudeInstalled) {
-        $BtnStartClaude.ToolTip = "Requires Claude Code to be installed"
+        $BtnUpdateClaude.ToolTip = "Requires Claude Code to be installed"
+        $BtnStartClaude.ToolTip  = "Requires Claude Code to be installed"
     } else {
-        $BtnStartClaude.ToolTip = $null
+        $BtnUpdateClaude.ToolTip = $null
+        $BtnStartClaude.ToolTip  = $null
     }
 
     # Enable/disable SSO buttons based on AWS CLI installation
@@ -981,21 +1026,26 @@ $script:onInstallTick = {
 
         $prereqsMet = $script:GitInstalled -and $script:AwsInstalled
         $BtnInstallClaude.IsEnabled   = $prereqsMet
+        $BtnUpdateClaude.IsEnabled    = $script:ClaudeInstalled
         $BtnCheckPrereqs.IsEnabled    = $true
-        $BtnUninstallClaude.IsEnabled = $true
+        $BtnUninstallClaude.IsEnabled = $script:ClaudeInstalled
     }
 }
 
 $BtnInstallClaude.Add_Click({
     $BtnInstallClaude.IsEnabled   = $false
+    $BtnUpdateClaude.IsEnabled    = $false
     $BtnCheckPrereqs.IsEnabled    = $false
     $BtnUninstallClaude.IsEnabled = $false
     $LblStatusBar.Text = "Installer window opened - complete the install there, then return here."
     Write-AppLog "Launching official Claude Code installer in a new terminal..."
 
-    $installCmd = "Write-Host 'Claude Code Installer' -ForegroundColor Cyan; Write-Host '=====================' -ForegroundColor Cyan; Write-Host ''; irm https://claude.ai/install.ps1 | iex; Write-Host ''; Write-Host 'Installation complete. You may close this window.' -ForegroundColor Green; pause"
+    $installCmd = "Write-Host 'Claude Code Installer' -ForegroundColor Cyan; Write-Host '=====================' -ForegroundColor Cyan; Write-Host ''; try { irm https://claude.ai/install.ps1 | iex } catch { Write-Host ''; Write-Host ('ERROR: ' + `$_) -ForegroundColor Red; Write-Host 'Installation failed. Review the error above.' -ForegroundColor Yellow }; Write-Host ''; Write-Host 'You may close this window.' -ForegroundColor Green; pause"
 
-    $script:installProc = Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $installCmd) -PassThru
+    # Prefer pwsh.exe (PowerShell 7) — it has Get-FileHash available without corporate module restrictions
+    $pwshExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue)
+    $shell = if ($pwshExe) { $pwshExe.Source } else { 'powershell.exe' }
+    $script:installProc = Start-Process $shell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $installCmd) -PassThru
 
     $script:installTimer = New-Object System.Windows.Threading.DispatcherTimer
     $script:installTimer.Interval = [TimeSpan]::FromSeconds(2)
@@ -1023,8 +1073,9 @@ $script:onUninstallTick = {
         $LblStatusBar.Text = "Claude Code uninstalled."
         $prereqsMet = $script:GitInstalled -and $script:AwsInstalled
         $BtnInstallClaude.IsEnabled   = $prereqsMet
+        $BtnUpdateClaude.IsEnabled    = $false
         $BtnCheckPrereqs.IsEnabled    = $true
-        $BtnUninstallClaude.IsEnabled = $true
+        $BtnUninstallClaude.IsEnabled = $script:ClaudeInstalled
     }
 }
 
@@ -1038,6 +1089,7 @@ $BtnUninstallClaude.Add_Click({
     if ($result -ne [System.Windows.MessageBoxResult]::Yes) { return }
 
     $BtnInstallClaude.IsEnabled   = $false
+    $BtnUpdateClaude.IsEnabled    = $false
     $BtnCheckPrereqs.IsEnabled    = $false
     $BtnUninstallClaude.IsEnabled = $false
     $LblStatusBar.Text = "Uninstalling Claude Code..."
@@ -1066,6 +1118,131 @@ $BtnUninstallClaude.Add_Click({
     $script:uninstallTimer.Interval = [TimeSpan]::FromSeconds(2)
     $script:uninstallTimer.Add_Tick($script:onUninstallTick)
     $script:uninstallTimer.Start()
+})
+
+# --- Update Claude Code ---
+$script:updateClaudeProc = $null
+
+$script:onUpdateClaudeTick = {
+    try {
+        $p = $script:updateClaudeProc
+        if ($null -eq $p) { return }
+        $exited = $p.HasExited
+    } catch {
+        $exited = $true
+    }
+    if ($exited) {
+        $script:updateClaudeTimer.Stop()
+        $script:updateClaudeProc = $null
+        Write-AppLog "Update terminal closed."
+
+        $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                    [Environment]::GetEnvironmentVariable("Path","User")
+
+        Update-Prerequisites
+
+        if ($script:ClaudeInstalled) {
+            $claudeFallbacks = @(
+                (Join-Path $env:USERPROFILE ".local\bin\claude.exe"),
+                "$env:ProgramFiles\Claude\bin\claude.exe",
+                "${env:ProgramFiles(x86)}\Claude\bin\claude.exe",
+                (Join-Path $env:LOCALAPPDATA "Claude\bin\claude.exe"),
+                (Join-Path $env:APPDATA "npm\claude.cmd"))
+
+            # Show which binary is resolved after the update
+            $resolvedPath = $null
+            foreach ($dir in ($env:Path -split ';' | Where-Object { $_ })) {
+                foreach ($ext in @('.exe', '.cmd', '.bat', '')) {
+                    $p = Join-Path $dir "claude$ext"
+                    if (Test-Path $p -PathType Leaf -ErrorAction SilentlyContinue) { $resolvedPath = $p; break }
+                }
+                if ($resolvedPath) { break }
+            }
+            if (-not $resolvedPath) { foreach ($fb in $claudeFallbacks) { if (Test-Path $fb -PathType Leaf -ErrorAction SilentlyContinue) { $resolvedPath = $fb; break } } }
+            if ($resolvedPath) { Write-AppLog "claude resolved to    : $resolvedPath" }
+
+            $claudeVer = Get-ToolInfo "claude" @("--version") $claudeFallbacks
+            Write-AppLog "Version after update  : $claudeVer"
+
+            if ($claudeVer -ne $script:claudeVerBeforeUpdate) {
+                Write-AppLog "Updated: $($script:claudeVerBeforeUpdate) → $claudeVer" "OK"
+                $LblStatusBar.Text = "Claude Code updated to $claudeVer"
+            } else {
+                Write-AppLog "Version unchanged: $claudeVer — already on latest, or update did not apply." "WARN"
+                $LblStatusBar.Text = "No version change detected — already on latest?"
+            }
+        } else {
+            Write-AppLog "Claude Code not detected after update. The update may have been cancelled." "WARN"
+            $LblStatusBar.Text = "Update not confirmed - click Refresh Status to re-check."
+        }
+
+        $prereqsMet = $script:GitInstalled -and $script:AwsInstalled
+        $BtnInstallClaude.IsEnabled   = $prereqsMet
+        $BtnUpdateClaude.IsEnabled    = $script:ClaudeInstalled
+        $BtnCheckPrereqs.IsEnabled    = $true
+        $BtnUninstallClaude.IsEnabled = $script:ClaudeInstalled
+    }
+}
+
+$BtnUpdateClaude.Add_Click({
+    $BtnInstallClaude.IsEnabled   = $false
+    $BtnUpdateClaude.IsEnabled    = $false
+    $BtnCheckPrereqs.IsEnabled    = $false
+    $BtnUninstallClaude.IsEnabled = $false
+    $LblStatusBar.Text = "Update window opened - complete the update there, then return here."
+
+    # Capture current version and resolved path before launching update
+    $claudeFallbacks = @(
+        (Join-Path $env:USERPROFILE ".local\bin\claude.exe"),
+        "$env:ProgramFiles\Claude\bin\claude.exe",
+        "${env:ProgramFiles(x86)}\Claude\bin\claude.exe",
+        (Join-Path $env:LOCALAPPDATA "Claude\bin\claude.exe"),
+        (Join-Path $env:APPDATA "npm\claude.cmd"))
+    $script:claudeVerBeforeUpdate = Get-ToolInfo "claude" @("--version") $claudeFallbacks
+    $resolvedPath = $null
+    foreach ($dir in ($env:Path -split ';' | Where-Object { $_ })) {
+        foreach ($ext in @('.exe', '.cmd', '.bat', '')) {
+            $p = Join-Path $dir "claude$ext"
+            if (Test-Path $p -PathType Leaf -ErrorAction SilentlyContinue) { $resolvedPath = $p; break }
+        }
+        if ($resolvedPath) { break }
+    }
+    if (-not $resolvedPath) { foreach ($fb in $claudeFallbacks) { if (Test-Path $fb -PathType Leaf -ErrorAction SilentlyContinue) { $resolvedPath = $fb; break } } }
+
+    Write-AppLog "Launching claude update in a new terminal..."
+    Write-AppLog "Version before update : $($script:claudeVerBeforeUpdate)"
+    if ($resolvedPath) { Write-AppLog "claude resolved to    : $resolvedPath" }
+
+    # System-wide installs (Program Files) require admin rights to update — non-admin users cannot do this
+    $inProgramFiles = $resolvedPath -and (
+        $resolvedPath -like "$env:ProgramFiles\*" -or
+        $resolvedPath -like "${env:ProgramFiles(x86)}\*")
+
+    if ($inProgramFiles) {
+        Write-AppLog "Cannot update: Claude Code is installed system-wide at '$resolvedPath'. Updates require an administrator." "WARN"
+        $LblStatusBar.Text = "Update blocked — system-wide install requires admin."
+        $BtnInstallClaude.IsEnabled   = ($script:GitInstalled -and $script:AwsInstalled)
+        $BtnUpdateClaude.IsEnabled    = $true
+        $BtnCheckPrereqs.IsEnabled    = $true
+        $BtnUninstallClaude.IsEnabled = $script:ClaudeInstalled
+        [System.Windows.MessageBox]::Show(
+            "Claude Code is installed system-wide:`n$resolvedPath`n`nUpdating this location requires administrator access. Please ask your IT team to update Claude Code using the official installer.",
+            "Update Requires Admin",
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Information)
+        return
+    }
+
+    $updateCmd = "`$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'); Write-Host 'Claude Code Updater' -ForegroundColor Cyan; Write-Host '===================' -ForegroundColor Cyan; Write-Host ''; claude update; Write-Host ''; Write-Host 'Update complete. You may close this window.' -ForegroundColor Green; pause"
+
+    $script:updateClaudeProc = Start-Process powershell.exe `
+        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $updateCmd) `
+        -PassThru
+
+    $script:updateClaudeTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:updateClaudeTimer.Interval = [TimeSpan]::FromSeconds(2)
+    $script:updateClaudeTimer.Add_Tick($script:onUpdateClaudeTick)
+    $script:updateClaudeTimer.Start()
 })
 
 # --- Apply Configuration ---
